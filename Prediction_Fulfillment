@@ -1,0 +1,33 @@
+SELECT
+  day,
+  cumulative_revenue,
+  cumulative_predict,
+  ROUND(cumulative_revenue / cumulative_predict * 100, 2) AS progress_bar
+FROM (
+  SELECT DISTINCT
+    day,
+    ROUND(SUM(revenue) OVER (ORDER BY day), 2) AS cumulative_revenue,
+    ROUND(SUM(predict) OVER (ORDER BY day), 2) AS cumulative_predict
+  FROM (
+    SELECT
+      DATE_TRUNC(s.date, DAY) AS day,
+      SUM(p.price) AS revenue,
+      0 AS predict
+    FROM `DA.order` o
+    JOIN `DA.product` p USING (item_id)
+    JOIN `DA.session` s USING (ga_session_id)
+    GROUP BY 1
+
+
+    UNION ALL
+
+
+    SELECT
+      DATE_TRUNC(date, DAY) AS day,
+      0 AS revenue,
+      SUM(predict) AS predict
+    FROM `DA.revenue_predict`
+    GROUP BY 1
+  )
+)
+ORDER BY day
