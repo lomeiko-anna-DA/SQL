@@ -1,0 +1,113 @@
+WITH
+  accounts_metrics AS (  -- Calculate metrics first for accounts
+    SELECT
+      sp.country,
+      s.date AS date,
+      a.send_interval,
+      a.is_verified,
+      a.is_unsubscribed,
+      COUNT(DISTINCT id) AS account_cnt
+    FROM `DA.account` a
+    JOIN `DA.account_session` acs
+      ON acs.account_id = a.id
+    JOIN `DA.session` s
+      ON s.ga_session_id = acs.ga_session_id
+    JOIN `DA.session_params` sp
+      ON acs.ga_session_id = sp.ga_session_id
+    GROUP BY 1, 2, 3, 4, 5
+  ),
+  emails_metrics AS (  -- Calculating metrics for emails
+    SELECT
+      DATE_ADD(s.date, INTERVAL ems.sent_date DAY) AS date,
+      sp.country,
+      ac.send_interval,
+      ac.is_verified,
+      ac.is_unsubscribed,
+      COUNT(DISTINCT ems.id_message) AS sent_msg,
+      COUNT(DISTINCT eo.id_message) AS open_msg,
+      COUNT(DISTINCT ev.id_message) AS visit_msg
+    FROM `DA.email_sent` ems
+    LEFT JOIN `DA.email_open` eo
+      ON ems.id_message = eo.id_message
+    LEFT JOIN `DA.email_visit` ev
+      ON ems.id_message = ev.id_message
+    JOIN `DA.account` ac
+      ON ems.id_account = ac.id
+    JOIN `DA.account_session` acs
+      ON ac.id = acs.account_id
+    JOIN `DA.session` s
+      USING (ga_session_id)
+    JOIN `DA.session_params` sp
+      USING (ga_session_id)
+    GROUP BY 1, 2, 3, 4, 5
+  ),
+  combined AS (  -- Combine previous CTEs via UNION
+    SELECT
+      date,
+      country,
+      send_interval,
+      is_verified,
+      is_unsubscribed,
+      account_cnt,
+      0 AS sent_msg,
+      0 AS open_msg,
+      0 AS visit_msg
+    FROM accounts_metrics
+    UNION ALL
+    SELECT
+      date,
+      country,
+      send_interval,
+      is_verified,
+      is_unsubscribed,
+      0 AS account_cnt,
+      sent_msg,
+      open_msg,
+      visit_msg
+    FROM emails_metrics
+  ),
+  group_by_all_metrics AS (  -- after UNION we do aggregation for our metrics
+    SELECT
+      date,
+      country,
+      send_interval,
+      is_verified,
+      is_unsubscribed,
+      SUM(account_cnt) AS account_cnt,
+      SUM(sent_msg) AS sent_msg,
+      SUM(open_msg) AS open_msg,
+      SUM(visit_msg) AS visit_msg
+    FROM combined
+    GROUP BY 1, 2, 3, 4, 5
+  ),
+  country_totals
+  AS (  -- aggregate accounts and emails to find the exact number by country
+    SELECT
+      country,
+      SUM(account_cnt) AS total_country_account_cnt,
+      SUM(sent_msg) AS total_country_sent_cnt
+    FROM group_by_all_metrics
+    GROUP BY country
+  ),
+  final
+  AS (  -- combine aggregated metrics, totals by country and rank countries
+    SELECT
+      g.*,
+      total_country_account_cnt,
+      total_country_sent_cnt,
+      DENSE_RANK()
+        OVER (ORDER BY total_country_account_cnt DESC)
+        AS rank_total_country_account_cnt,
+      DENSE_RANK()
+        OVER (ORDER BY total_country_sent_cnt DESC)
+        AS rank_total_country_sent_cnt
+    FROM group_by_all_metrics g
+    JOIN country_totals
+      ON g.country = country_totals.country
+  )
+-- rank of created accounts or sent emails is less than 10 inclusive
+SELECT *
+FROM final
+WHERE
+  rank_total_country_account_cnt <= 10
+  OR rank_total_country_sent_cnt <= 10
